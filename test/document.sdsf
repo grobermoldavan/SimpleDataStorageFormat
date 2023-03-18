@@ -1,0 +1,19 @@
+name    "test1"
+version 1
+amogus  0.001
+settings
+{
+    volume      0.56
+    isEpic      t
+    position    [-0.1, 0.2, 0.35]
+    what        [t, f, f, t]
+    composite
+    {
+        another_name    "tricky string 1 1.123 -2.28 b13-37"
+        check           f
+        binary          b0-9
+    }
+    composite_array[{ val -1 }, { val 123 }, { val "123123123" }, { val 0 antother_val 1.344 }]
+}
+
+@1234567890
