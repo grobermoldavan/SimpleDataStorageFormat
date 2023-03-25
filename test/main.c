@@ -3,8 +3,6 @@
 #include "..\simple_data_storage_format.h"
 
 #include <stdio.h>
-#include <stdint.h>
-#include <stdlib.h>
 
 typedef struct
 {
@@ -14,6 +12,11 @@ typedef struct
 
 FileContent read_whole_file(const char* path)
 {
+    //
+    // @NOTE : if you use fopen for file read make shure
+    // to use "rb" mode. "r" mode can alter file size or
+    // content leading to an incorrect parsing and deserialization
+    //
     FILE* const file = fopen(path, "rb");
     fseek(file, 0, SEEK_END);
     const long fsize = ftell(file);
@@ -45,7 +48,7 @@ void print_value_rec(const SdsfValue* value, size_t depth)
         case SDSF_VALUE_INT:    { printf("%d", value->asInt); } break;
         case SDSF_VALUE_FLOAT:  { printf("%f", value->asFloat); } break;
         case SDSF_VALUE_STRING: { printf("%s", value->asString); } break;
-        case SDSF_VALUE_BINARY: { printf("From %zu, size %zu", value->asBinary.dataOffset, value->asBinary.dataSize); } break;
+        case SDSF_VALUE_BINARY: { printf("From %zu, size %zu, %s", value->asBinary.dataOffset, value->asBinary.dataSize); } break;
     }
     printf("\n");
 
@@ -65,30 +68,84 @@ void print_value_rec(const SdsfValue* value, size_t depth)
     }
 }
 
-void print_stuff(const SdsfDeserialized* stuff)
+void deserialize_and_print(const void* data, size_t dataSize, SdsfAllocator allocator)
 {
-    for (size_t it = 0; it < stuff->topLevelValues.size; it++)
+    SdsfDeserializedResult dr = {0};
+    const SdsfError error = sdsf_deserialize(&dr, data, dataSize, allocator);
+
+    if (error)
     {
-        const SdsfValue* const value = stuff->topLevelValues.ptr[it];
-        print_value_rec(value, 0);
+        printf("Deserialization error : %s\n", SDSF_ERROR_TO_STR[error]);
     }
+    else
+    {
+        for (size_t it = 0; it < dr.topLevelValues.size; it++)
+        {
+            const SdsfValue* const value = dr.topLevelValues.ptr[it];
+            print_value_rec(value, 0);
+        }
+    }
+
+    sdsf_deserialized_result_free(&dr);
+}
+
+void serialize_bunch_of_stuff(SdsfSerializer* sdsf)
+{
+    sdsf_serialize_bool(sdsf, "boolValue", true);
+    sdsf_serialize_int(sdsf, "intValue", 228);
+    sdsf_serialize_float(sdsf, "floatValue", 2.001f);
+    sdsf_serialize_string(sdsf, "stringValue", "String string string!");
 }
 
 void main()
 {
+    const SdsfAllocator allocator = { alloc, dealloc, NULL };
+
+    printf(" ===================================================================\n");
+    printf(" TEST DESERIALIZATION FROM FILE\n");
+    printf(" ===================================================================\n\n");
+
     const FileContent file = read_whole_file("test\\document.sdsf");
-    const SdsfAllocator allocator = { NULL, alloc, dealloc };
-    SdsfDeserialized result = {0};
-    const SdsfError error = sdsf_deserialize(&result, file.data, file.size, allocator);
+    deserialize_and_print(file.data, file.size, allocator);
 
-    if (error)
-    {
-        printf("Deserealization error : %s\n", SDSF_ERROR_TO_STR[error]);
-    }
-    else
-    {
-        print_stuff(&result);
-    }
+    printf("\n ===================================================================\n");
+    printf(" TEST SERIALIZATION\n");
+    printf(" ===================================================================\n\n");
 
-    sdsf_free(&result);
+    SdsfSerializer sdsf = sdsf_serializer_begin(allocator);
+
+    const char* binaryData = "This is stored in binary section";
+
+    serialize_bunch_of_stuff(&sdsf);
+    sdsf_serialize_array_start(&sdsf, "valuesInArray");
+        serialize_bunch_of_stuff(&sdsf);
+    sdsf_serialize_array_end(&sdsf);
+    sdsf_serialize_composite_start(&sdsf, "valuesInComposite");
+        serialize_bunch_of_stuff(&sdsf);
+        sdsf_serialize_array_start(&sdsf, "valuesInArray");
+            serialize_bunch_of_stuff(&sdsf);
+            sdsf_serialize_binary(&sdsf, "binaryValue", binaryData, strlen(binaryData));
+        sdsf_serialize_array_end(&sdsf);
+        //
+        // @NOTE : + 1 here is only for demonstration purpouses, so we can print
+        // whole file after serialization
+        //
+        sdsf_serialize_binary(&sdsf, "binaryValue", binaryData, strlen(binaryData) + 1);
+    sdsf_serialize_composite_end(&sdsf);
+
+    SdsfSerializedResult sr = sdsf_serializer_end(&sdsf);
+
+    //
+    // @NOTE : In real application it's incorrect to print whole sdsf file because
+    // binary section can (and most probably will) have non-text data
+    //
+    printf("Serialized file :\n%s\n\n", (const char*)sr.buffer);
+
+    printf(" ===================================================================\n");
+    printf(" TEST DESERIALIZATION FROM SERIALIZED DATA\n");
+    printf(" ===================================================================\n\n");
+
+    deserialize_and_print(sr.buffer, sr.bufferSize, allocator);
+
+    sdsf_serialized_result_free(&sr);
 }

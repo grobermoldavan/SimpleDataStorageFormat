@@ -6,6 +6,7 @@ settings
     volume      0.56
     isEpic      t
     position    [-0.1, 0.2, 0.35]
+    same_array_with_comma_in_the_end [-0.1, 0.2, 0.35, ]
     what        [t, f, f, t]
     composite
     {
