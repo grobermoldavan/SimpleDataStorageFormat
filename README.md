@@ -2,7 +2,7 @@
 
 Header-only library for reading and writing files of my own format called "Simple Data Storage Format" (sdsf)
 
-This format can store:
+This format supports:
  - bool values
  - int values
  - float values
