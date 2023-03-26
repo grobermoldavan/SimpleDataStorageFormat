@@ -64,33 +64,56 @@
      === LIBRARY DESCRIPTION ===
 
     To deserialize file user must:
-    1) read file into a memory buffer
-       !important - if c file api is used to read file (fopen, fread, etc.), "rb" mode must be used because "r" mode can alter file size and stuff!
-    2) provide SdsfAllocator for library to use
-    3) preallocate SdsfDeserializedResult value (can be on stack)
-    4) call sdsf_deserialize function with all required args
-    5) check for SdsfError value
+        1) read file into a memory buffer
+        2) provide SdsfAllocator for library to use
+        3) preallocate SdsfDeserializedResult value (can be on stack)
+        4) call sdsf_deserialize function with all required args
+        5) check for SdsfDeserializationError value
+        6) process result
+        7) call sdsf_deserialized_result_free
+
+        Important - if c file api is used to read file (fopen, fread, etc.), "rb" mode must be used because "r" mode can alter file size and stuff
+        Important - even if deserialization fails sdsf_deserialized_result_free must be called
 
     To serialize file user must:
-    1) provide SdsfAllocator for library to use
-    2) call sdsf_serializer_begin
-    3) call sdsf_serialize_* functions to store data to sdsf
-    4) call sdsf_serializer_end
-    5) use SdsfSerializedResult data as needed
-    6) free SdsfSerializedResult using sdsf_serialized_result_free
+        1) provide SdsfAllocator for library to use
+        2) call sdsf_serializer_begin
+        3) call sdsf_serialize_* functions to store data to sdsf
+        3.1) check for SdsfSerializationError if neccessary
+        4) call sdsf_serializer_end
+        5) use SdsfSerializedResult data as needed
+        6) free SdsfSerializedResult using sdsf_serialized_result_free
 
-    User can alter library behaviour using preprocessor commands:
-        Integer defines:
-            SDSF_VALUES_ARRAY_DEFAULT_CAPACITY                  - defines default size for SdsfValueArray
-            SDSF_VALUES_PTR_ARRAY_DEFAULT_CAPACITY              - defines default size for SdsfValuePtrArray
-            SDSF_STRING_ARRAY_DEFAULT_CAPACITY                  - defines default size for SdsfStringArray
-            SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY             - defines size for serializer's staging buffer (used for converting integers and floats to string)
-            SDSF_SERIALIZER_MAIN_BUFFER_DEFAULT_CAPACITY        - defines default size for serializer's main (aka result) buffer
-            SDSF_SERIALIZER_STACK_DEFAULT_CAPACITY              - defines default size for serializer's _SdsfSerializerStackEntry stack
-            SDSF_SERIALIZER_BINARY_DATA_BUFFER_DEFAULT_CAPACITY - defines default size for serializer's binary data buffer
-        functional defines:
-            sdsf_assert - can be redefined to use custom error-handling logic
+        Important - if SdsfSerializationError occurs, user can continue serialization process. Serialization error invalidates only a single command
+        For example, if following sequence of commands was executed:
+            sdsf_serialize_string(&sdsf, "a", "first string");
+            sdsf_serialize_string(&sdsf, NULL, "this command will fail because name is null");
+            sdsf_serialize_string(&sdsf, "c", "third string");
+        Resulting sdsf file will look like this:
+            a "first string"
+            c "third string"
 
+    User can alter library behaviour using preprocessor definitions:
+        SDSF_VALUES_ARRAY_DEFAULT_CAPACITY                  - defines default size for SdsfValueArray
+        SDSF_VALUES_PTR_ARRAY_DEFAULT_CAPACITY              - defines default size for SdsfValuePtrArray
+        SDSF_STRING_ARRAY_DEFAULT_CAPACITY                  - defines default size for SdsfStringArray
+        SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY             - defines size for serializer's staging buffer (used for converting integers and floats to string)
+        SDSF_SERIALIZER_MAIN_BUFFER_DEFAULT_CAPACITY        - defines default size for serializer's main (aka result) buffer
+        SDSF_SERIALIZER_STACK_DEFAULT_CAPACITY              - defines default size for serializer's _SdsfSerializerStackEntry stack
+        SDSF_SERIALIZER_BINARY_DATA_BUFFER_DEFAULT_CAPACITY - defines default size for serializer's binary data buffer
+
+    Library does not check SdsfAllocator::alloc result. Valid pointer is always expected
+
+    Both serialization and deserialization operations return error codes (SdsfDeserializationError / SdsfSerializationError)
+    On success error code is 0, so user can do error check using if statement:
+    SdsfDeserializationError err = sdsf_deserialize(&dr, data, dataSize, allocator);
+    if (err)
+    {
+        // Handle error
+    }
+
+    If error occurs, SdsfDeserializedResult and SdsfSerializer will have error description in errorMsg member
+    To access error message in unified manner sdsf_get_error_message macro can be used
 */
 
 #ifdef __cplusplus
@@ -154,28 +177,24 @@ const char* SDSF_VALUE_TYPE_TO_STR[] =
 
 typedef enum
 {
-    SDSF_ERROR_ALL_FINE = 0,
-    SDSF_ERROR_SOMETHING_REALLY_BAD,
-    SDSF_ERROR_TOKENIZER_FAILED,
-    SDSF_ERROR_EXPECTED_IDENTIFIER,
-    SDSF_ERROR_EXPECTED_VALUE,
-    SDSF_ERROR_UNEXPECTED_RESERVED_SYMBOL,
-    SDSF_ERROR_EXPECTED_STRING_LITERAL,
-    SDSF_ERROR_INVALID_BINARY_LITERAL,
-    SDSF_ERROR_UNEXPECTED_BINARY_DATA_BLOB,
-} SdsfError;
+    SDSF_DESERIALIZATION_ERROR_ALL_FINE = 0,
+    SDSF_DESERIALIZATION_ERROR_TOKENIZER_FAILED,
+    SDSF_DESERIALIZATION_ERROR_EXPECTED_IDENTIFIER,
+    SDSF_DESERIALIZATION_ERROR_UNEXPECTED_RESERVED_SYMBOL,
+    SDSF_DESERIALIZATION_ERROR_UNEXPECTED_BINARY_DATA_BLOB,
+    SDSF_DESERIALIZATION_ERROR_UNEXPECTED_IDENTIFIER,
+    SDSF_DESERIALIZATION_ERROR_INVALID_BINARY_LITERAL,
+} SdsfDeserializationError;
 
-const char* SDSF_ERROR_TO_STR[] =
+const char* SDSF_DESERIALIZATION_ERROR_TO_STR[] =
 {
-    "SDSF_ERROR_ALL_FINE",
-    "SDSF_ERROR_SOMETHING_REALLY_BAD",
-    "SDSF_ERROR_TOKENIZER_FAILED",
-    "SDSF_ERROR_EXPECTED_IDENTIFIER",
-    "SDSF_ERROR_EXPECTED_VALUE",
-    "SDSF_ERROR_UNEXPECTED_RESERVED_SYMBOL",
-    "SDSF_ERROR_EXPECTED_STRING_LITERAL",
-    "SDSF_ERROR_INVALID_BINARY_LITERAL",
-    "SDSF_ERROR_UNEXPECTED_BINARY_DATA_BLOB",
+    "SDSF_DESERIALIZATION_ERROR_ALL_FINE",
+    "SDSF_DESERIALIZATION_ERROR_TOKENIZER_FAILED",
+    "SDSF_DESERIALIZATION_ERROR_EXPECTED_IDENTIFIER",
+    "SDSF_DESERIALIZATION_ERROR_UNEXPECTED_RESERVED_SYMBOL",
+    "SDSF_DESERIALIZATION_ERROR_UNEXPECTED_BINARY_DATA_BLOB",
+    "SDSF_DESERIALIZATION_ERROR_UNEXPECTED_IDENTIFIER",
+    "SDSF_DESERIALIZATION_ERROR_INVALID_BINARY_LITERAL",
 };
 
 typedef struct
@@ -235,13 +254,38 @@ typedef struct SdsfValue
 
 typedef struct
 {
-    SdsfAllocator allocator;
-    SdsfValuePtrArray topLevelValues;
-    SdsfValueArray values;
-    SdsfStringArray strings;
-    void* binaryData;
-    size_t binaryDataSize;
+    SdsfAllocator       allocator;
+    SdsfValuePtrArray   topLevelValues;
+    SdsfValueArray      values;
+    SdsfStringArray     strings;
+    void*               binaryData;
+    size_t              binaryDataSize;
+    const char*         errorMsg;
 } SdsfDeserializedResult;
+
+typedef enum
+{
+    SDSF_SERIALIZATION_ERROR_ALL_FINE = 0,
+    SDSF_SERIALIZATION_ERROR_NO_NAME_PROVIDED,
+    SDSF_SERIALIZATION_ERROR_INVALID_NAME,
+    SDSF_SERIALIZATION_ERROR_NO_VALUE_PROVIDED,
+    SDSF_SERIALIZATION_ERROR_UNABLE_TO_CONVERT_VALUE_TO_STRING,
+    SDSF_SERIALIZATION_ERROR_UNABLE_TO_END_ARRAY,
+    SDSF_SERIALIZATION_ERROR_UNABLE_TO_END_COMPOSITE,
+    SDSF_SERIALIZATION_ERROR_UNFINISHED_ARRAY_OR_COMPOSITE_VALUES,
+} SdsfSerializationError;
+
+const char* SDSF_SERIALIZATION_ERROR_TO_STR[] =
+{
+    "SDSF_SERIALIZATION_ERROR_ALL_FINE",
+    "SDSF_SERIALIZATION_ERROR_NO_NAME_PROVIDED",
+    "SDSF_SERIALIZATION_ERROR_INVALID_NAME",
+    "SDSF_SERIALIZATION_ERROR_NO_VALUE_PROVIDED",
+    "SDSF_SERIALIZATION_ERROR_UNABLE_TO_CONVERT_VALUE_TO_STRING",
+    "SDSF_SERIALIZATION_ERROR_UNABLE_TO_END_ARRAY",
+    "SDSF_SERIALIZATION_ERROR_UNABLE_TO_END_COMPOSITE",
+    "SDSF_SERIALIZATION_ERROR_UNFINISHED_ARRAY_OR_COMPOSITE_VALUES",
+};
 
 typedef enum 
 {
@@ -252,47 +296,46 @@ typedef enum
 
 typedef struct
 {
-    SdsfAllocator allocator;
-
-    char* stagingBuffer;
-    size_t stagingBufferSize;
-
-    _SdsfSerializerStackEntry* stack;
-    size_t stackSize;
-    size_t stackCapacity;
-
-    void* binaryDataBuffer;
-    size_t binaryDataBufferSize;
-    size_t binaryDataBufferCapacity;
-
-    void* mainBuffer;
-    size_t mainBufferSize;
-    size_t mainBufferCapacity;
+    SdsfAllocator               allocator;
+    char*                       stagingBuffer1;
+    char*                       stagingBuffer2;
+    _SdsfSerializerStackEntry*  stack;
+    size_t                      stackSize;
+    size_t                      stackCapacity;
+    void*                       binaryDataBuffer;
+    size_t                      binaryDataBufferSize;
+    size_t                      binaryDataBufferCapacity;
+    void*                       mainBuffer;
+    size_t                      mainBufferSize;
+    size_t                      mainBufferCapacity;
+    const char*                 errorMsg;
 } SdsfSerializer;
 
 typedef struct
 {
-    SdsfAllocator allocator;
-    void* buffer;
-    size_t bufferSize;
-    size_t bufferCapacity;
+    SdsfAllocator   allocator;
+    void*           buffer;
+    size_t          bufferSize;
+    size_t          bufferCapacity;
 } SdsfSerializedResult;
 
-SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, size_t dataSize, SdsfAllocator allocator);
+SdsfDeserializationError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, size_t dataSize, SdsfAllocator allocator);
 void sdsf_deserialized_result_free(SdsfDeserializedResult* sdsf);
 
 SdsfSerializer sdsf_serializer_begin(SdsfAllocator allocator);
-void sdsf_serialize_bool(SdsfSerializer* sdsf, const char* name, bool value);
-void sdsf_serialize_int(SdsfSerializer* sdsf, const char* name, int32_t value);
-void sdsf_serialize_float(SdsfSerializer* sdsf, const char* name, float value);
-void sdsf_serialize_string(SdsfSerializer* sdsf, const char* name, const char* value);
-void sdsf_serialize_binary(SdsfSerializer* sdsf, const char* name, const void* value, size_t size);
-void sdsf_serialize_array_start(SdsfSerializer* sdsf, const char* name);
-void sdsf_serialize_array_end(SdsfSerializer* sdsf);
-void sdsf_serialize_composite_start(SdsfSerializer* sdsf, const char* name);
-void sdsf_serialize_composite_end(SdsfSerializer* sdsf);
-SdsfSerializedResult sdsf_serializer_end(SdsfSerializer* sdsf);
+SdsfSerializationError sdsf_serialize_bool(SdsfSerializer* sdsf, const char* name, bool value);
+SdsfSerializationError sdsf_serialize_int(SdsfSerializer* sdsf, const char* name, int32_t value);
+SdsfSerializationError sdsf_serialize_float(SdsfSerializer* sdsf, const char* name, float value);
+SdsfSerializationError sdsf_serialize_string(SdsfSerializer* sdsf, const char* name, const char* value);
+SdsfSerializationError sdsf_serialize_binary(SdsfSerializer* sdsf, const char* name, const void* value, size_t size);
+SdsfSerializationError sdsf_serialize_array_start(SdsfSerializer* sdsf, const char* name);
+SdsfSerializationError sdsf_serialize_array_end(SdsfSerializer* sdsf);
+SdsfSerializationError sdsf_serialize_composite_start(SdsfSerializer* sdsf, const char* name);
+SdsfSerializationError sdsf_serialize_composite_end(SdsfSerializer* sdsf);
+SdsfSerializationError sdsf_serializer_end(SdsfSerializer* sdsf, SdsfSerializedResult* result);
 void sdsf_serialized_result_free(SdsfSerializedResult* sdsf);
+
+#define sdsf_get_error_message(obj) (obj).errorMsg
 
 #ifdef __cplusplus
 }
@@ -307,11 +350,6 @@ void sdsf_serialized_result_free(SdsfSerializedResult* sdsf);
 
 #ifdef __cplusplus
 extern "C" {
-#endif
-
-#ifndef sdsf_assert
-#   include <assert.h>
-#   define sdsf_assert(condition, msg) assert((condition) && (msg))
 #endif
 
 #include <string.h>
@@ -454,11 +492,14 @@ bool _sdsf_consume_string(const char* sourceBuffer, size_t sourceBufferSize, siz
     return true;
 }
 
-_SdsfTokenType _sdsf_match_string(const _SdsfComsumedString* str)
+_SdsfTokenType _sdsf_match_string(SdsfDeserializedResult* sdsf, const _SdsfComsumedString* str)
 {
-    sdsf_assert(str->ptr, "Unable to match string : string pointer is null");
-    sdsf_assert(str->size, "Unable to match string : string size is zero");
-
+    if (!str->ptr || !str->size)
+    {
+        sdsf->errorMsg = "Tokenzer error - invalid string provided";
+        return _SDSF_TOKEN_TYPE_INVALID;
+    }
+    
     if (str->size == 1)
     {
         const char c = *str->ptr;
@@ -474,6 +515,7 @@ _SdsfTokenType _sdsf_match_string(const _SdsfComsumedString* str)
             {
                 case 't':
                 case 'f': return _SDSF_TOKEN_TYPE_BOOL_LITERAL;
+                sdsf->errorMsg = "Tokenzer error - invalid bool literal";
                 default: return _SDSF_TOKEN_TYPE_INVALID;
             }
         }
@@ -506,10 +548,13 @@ _SdsfTokenType _sdsf_match_string(const _SdsfComsumedString* str)
             possibilitySpace = _POSSIBLE_FLOAT_LITERAL;
             dotFound = true;
         }
+        else if (_sdsf_is_skipped_char(firstChar) || _sdsf_is_reserved_symbol(firstChar))
+        {
+            sdsf->errorMsg = "Tokenzer error - unexpected character";
+            return _SDSF_TOKEN_TYPE_INVALID;
+        }
         else
         {
-            sdsf_assert(!_sdsf_is_skipped_char(firstChar), "Unable to match string : unexpected skipped character");
-            sdsf_assert(!_sdsf_is_reserved_symbol(firstChar), "Unable to match string : unexpected reserved symbol");
             possibilitySpace = _POSSIBLE_IDENTIFIER;
         }
 
@@ -521,20 +566,32 @@ _SdsfTokenType _sdsf_match_string(const _SdsfComsumedString* str)
                 continue; // can be anything
             }
 
-            sdsf_assert(!_sdsf_is_skipped_char(c), "Unable to match string : unexpected skipped character");
-            sdsf_assert(!_sdsf_is_reserved_symbol(c), "Unable to match string : unexpected reserved symbol");
+            if (_sdsf_is_skipped_char(c) || _sdsf_is_reserved_symbol(c))
+            {
+                sdsf->errorMsg = "Tokenzer error - unexpected character";
+                return _SDSF_TOKEN_TYPE_INVALID;
+            }
+
             switch(c)
             {
                 case '.':
                 {
-                    if (dotFound) return _SDSF_TOKEN_TYPE_INVALID;
+                    if (dotFound)
+                    {
+                        sdsf->errorMsg = "Tokenzer error - two '.' characters in single literal";
+                        return _SDSF_TOKEN_TYPE_INVALID;
+                    }
                     // only floats can have '.'
                     possibilitySpace &= _POSSIBLE_FLOAT_LITERAL;
                     dotFound = true;
                 } break;
                 case '-':
                 {
-                    if (dashFound) return _SDSF_TOKEN_TYPE_INVALID;
+                    if (dashFound)
+                    {
+                        sdsf->errorMsg = "Tokenzer error - two '-' characters in single literal";
+                        return _SDSF_TOKEN_TYPE_INVALID;
+                    }
                     // everything, but identifier can have '-'
                     possibilitySpace &= ~_POSSIBLE_IDENTIFIER;
                     dashFound = true;
@@ -569,10 +626,11 @@ _SdsfTokenType _sdsf_match_string(const _SdsfComsumedString* str)
         }
     }
 
+    sdsf->errorMsg = "Tokenzer error - failed to match token";
     return _SDSF_TOKEN_TYPE_INVALID;
 }
 
-bool _sdsf_consume_token(_SdsfConsumedToken* result, _SdsfTokenizerData* data)
+bool _sdsf_consume_token(SdsfDeserializedResult* sdsf, _SdsfConsumedToken* result, _SdsfTokenizerData* data)
 {
     _SdsfComsumedString consumedString;
     if (!_sdsf_consume_string(data->data, data->dataSize, &data->stringConsumePtr, &consumedString, data->stringLiteralState == _SDSF_STRING_LITERAL_BEGIN))
@@ -590,10 +648,9 @@ bool _sdsf_consume_token(_SdsfConsumedToken* result, _SdsfTokenizerData* data)
     }
     else
     {
-        result->tokenType = _sdsf_match_string(&consumedString);
+        result->tokenType = _sdsf_match_string(sdsf, &consumedString);
         if (result->tokenType == _SDSF_TOKEN_TYPE_RESERVED_SYMBOL && consumedString.ptr[0] == '\"')
         {
-            sdsf_assert(data->stringLiteralState != _SDSF_STRING_LITERAL_BEGIN, "Unable to consume token : unexpected string literal state");
             if (data->stringLiteralState == _SDSF_STRING_LITERAL_NONE)
             {
                 data->stringLiteralState = _SDSF_STRING_LITERAL_BEGIN;
@@ -723,7 +780,7 @@ void _sdsf_string_array_clear(SdsfStringArray* array, const SdsfAllocator* alloc
     }
 }
 
-SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, size_t dataSize, SdsfAllocator allocator)
+SdsfDeserializationError sdsf_deserialize(SdsfDeserializedResult* sdsf, const void* data, size_t dataSize, SdsfAllocator allocator)
 {
     _SdsfTokenizerData tokenizerData;
     tokenizerData.data                  = (const char*)data;
@@ -734,22 +791,23 @@ SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, siz
     _SdsfConsumedToken token;
     _SdsfConsumedToken previousToken = {0};
 
-    *result = (SdsfDeserializedResult){0};
-    result->allocator = allocator;
+    *sdsf = (SdsfDeserializedResult){0};
+    sdsf->allocator = allocator;
 
-    SdsfValuePtrArray* topLevelValues = &result->topLevelValues;
-    SdsfValueArray* values = &result->values;
-    SdsfStringArray* strings = &result->strings;
+    SdsfValuePtrArray* topLevelValues = &sdsf->topLevelValues;
+    SdsfValueArray* values = &sdsf->values;
+    SdsfStringArray* strings = &sdsf->strings;
     SdsfValue* currentValue = NULL;
 
     bool expectsBinaryDataBlob = false;
     bool shouldRun = true;
 
-    while (shouldRun && _sdsf_consume_token(&token, &tokenizerData))
+    while (shouldRun && _sdsf_consume_token(sdsf, &token, &tokenizerData))
     {
         if (token.tokenType == _SDSF_TOKEN_TYPE_INVALID)
         {
-            return SDSF_ERROR_TOKENIZER_FAILED;
+            // Error message is set in _sdsf_match_string
+            return SDSF_DESERIALIZATION_ERROR_TOKENIZER_FAILED;
         }
 
         if (token.tokenType == _SDSF_TOKEN_TYPE_IDENTIFIER)
@@ -758,13 +816,13 @@ SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, siz
             {
                 if (currentValue->type == SDSF_VALUE_UNDEFINED)
                 {
-                    // Two identifiers in a row
-                    return SDSF_ERROR_EXPECTED_VALUE;
+                    sdsf->errorMsg = "Unexpected identifier - got two identifiers in a row";
+                    return SDSF_DESERIALIZATION_ERROR_UNEXPECTED_IDENTIFIER;
                 }
                 if (currentValue->type != SDSF_VALUE_COMPOSITE)
                 {
-                    // Only composite values can have named childs
-                    return SDSF_ERROR_EXPECTED_VALUE;
+                    sdsf->errorMsg = "Unexpected identifier - only composite values can have named childs";
+                    return SDSF_DESERIALIZATION_ERROR_UNEXPECTED_IDENTIFIER;
                 }
             }
 
@@ -774,7 +832,6 @@ SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, siz
 
             if (currentValue)
             {
-                sdsf_assert(currentValue->type == SDSF_VALUE_COMPOSITE, "Unable to process identifier : only composite values can have named children");
                 SdsfValue** const ptr = _sdsf_val_ptr_array_add(&currentValue->asComposite.childs, &allocator);
                 *ptr = val;
             }
@@ -794,19 +851,18 @@ SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, siz
                 {
                     if (!currentValue || currentValue->type != SDSF_VALUE_ARRAY)
                     {
-                        // Commas can be used in arrays only
-                        return SDSF_ERROR_UNEXPECTED_RESERVED_SYMBOL;
+                        sdsf->errorMsg = "Unexpected ',' character - commas can be used in arrays only";
+                        return SDSF_DESERIALIZATION_ERROR_UNEXPECTED_RESERVED_SYMBOL;
                     }
                     if (currentValue->asArray.childs.size == 0)
                     {
-                        // Commas must be used only after first array child
-                        return SDSF_ERROR_UNEXPECTED_RESERVED_SYMBOL;
+                        sdsf->errorMsg = "Unexpected ',' character - commas must be used only after first array child";
+                        return SDSF_DESERIALIZATION_ERROR_UNEXPECTED_RESERVED_SYMBOL;
                     }
-                    const SdsfValue* const lastChild = currentValue->asArray.childs.ptr[currentValue->asArray.childs.size - 1];
-                    if (lastChild->type == SDSF_VALUE_UNDEFINED)
+                    if (previousToken.tokenType == _SDSF_TOKEN_TYPE_RESERVED_SYMBOL && previousToken.stringPtr[0] == ',')
                     {
-                        // Previous array child must be initialized before using comma
-                        return SDSF_ERROR_UNEXPECTED_RESERVED_SYMBOL;
+                        sdsf->errorMsg = "Unexpected ',' character - can't have multiple commas in a row";
+                        return SDSF_DESERIALIZATION_ERROR_UNEXPECTED_RESERVED_SYMBOL;
                     }
                     // @NOTE : comma doesn't allocate new values, new value is allocated when processing literals or creating composites/arrays
                 } break;
@@ -815,8 +871,8 @@ SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, siz
                 {
                     if (!currentValue || currentValue->type != SDSF_VALUE_ARRAY)
                     {
-                        // Only arrays can end with ']'
-                        return SDSF_ERROR_UNEXPECTED_RESERVED_SYMBOL;
+                        sdsf->errorMsg = "Unexpected ']' character - only arrays can end with this symbol";
+                        return SDSF_DESERIALIZATION_ERROR_UNEXPECTED_RESERVED_SYMBOL;
                     }
                     currentValue = currentValue->parent;
                 } break;
@@ -825,8 +881,8 @@ SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, siz
                 {
                     if (!currentValue || currentValue->type != SDSF_VALUE_COMPOSITE)
                     {
-                        // Only composites can end with '}'
-                        return SDSF_ERROR_UNEXPECTED_RESERVED_SYMBOL;
+                        sdsf->errorMsg = "Unexpected '}' character - only composites can end with this symbol";
+                        return SDSF_DESERIALIZATION_ERROR_UNEXPECTED_RESERVED_SYMBOL;
                     }
                     currentValue = currentValue->parent;
                 } break;
@@ -835,8 +891,8 @@ SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, siz
                 {
                     if (!currentValue)
                     {
-                        // Expected identifier or another array
-                        return SDSF_ERROR_EXPECTED_IDENTIFIER;
+                        sdsf->errorMsg = "Unexpected '[' character - new array value can be created only after identifier or as child of another array";
+                        return SDSF_DESERIALIZATION_ERROR_UNEXPECTED_RESERVED_SYMBOL;
                     }
                     if (currentValue->type == SDSF_VALUE_UNDEFINED)
                     {
@@ -855,9 +911,8 @@ SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, siz
                     }
                     else
                     {
-                        // New array can be created only after identifier (aka currentValue->type == SDSF_VALUE_UNDEFINED)
-                        // or in the another array (aka currentValue->type == SDSF_VALUE_ARRAY)
-                        return SDSF_ERROR_SOMETHING_REALLY_BAD;
+                        sdsf->errorMsg = "New array value can be created only after identifier or in the another array";
+                        return SDSF_DESERIALIZATION_ERROR_UNEXPECTED_RESERVED_SYMBOL;
                     }
                 } break;
 
@@ -865,8 +920,8 @@ SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, siz
                 {
                     if (!currentValue)
                     {
-                        // Expected identifier or array
-                        return SDSF_ERROR_EXPECTED_IDENTIFIER;
+                        sdsf->errorMsg = "Unexpected '[' character - new composite value can be created only after identifier or as child of the array";
+                        return SDSF_DESERIALIZATION_ERROR_UNEXPECTED_RESERVED_SYMBOL;
                     }
                     if (currentValue->type == SDSF_VALUE_UNDEFINED)
                     {
@@ -885,9 +940,8 @@ SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, siz
                     }
                     else
                     {
-                        // New array can be created only after identifier (aka currentValue->type == SDSF_VALUE_UNDEFINED)
-                        // or in the another array (aka currentValue->type == SDSF_VALUE_ARRAY)
-                        return SDSF_ERROR_SOMETHING_REALLY_BAD;
+                        sdsf->errorMsg = "Unexpected '[' character - new composite value can be created only after identifier or as child of the array";
+                        return SDSF_DESERIALIZATION_ERROR_UNEXPECTED_RESERVED_SYMBOL;
                     }
                 } break;
 
@@ -900,16 +954,16 @@ SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, siz
                 {
                     if (!expectsBinaryDataBlob)
                     {
-                        // No binary literals were used, so binary data is not expected
-                        return SDSF_ERROR_UNEXPECTED_BINARY_DATA_BLOB;
+                        sdsf->errorMsg = "Unexpected binary data blob - no binary literals were used";
+                        return SDSF_DESERIALIZATION_ERROR_UNEXPECTED_BINARY_DATA_BLOB;
                     }
 
                     const size_t binaryDataSize = tokenizerData.dataSize - tokenizerData.stringConsumePtr;
                     if (binaryDataSize)
                     {
                         void* const memory = allocator.alloc(binaryDataSize, allocator.userData);
-                        result->binaryData = memory;
-                        result->binaryDataSize = binaryDataSize;
+                        sdsf->binaryData = memory;
+                        sdsf->binaryDataSize = binaryDataSize;
                         const void* const from = tokenizerData.data + tokenizerData.stringConsumePtr;
                         memcpy(memory, from, binaryDataSize);
                     }
@@ -923,8 +977,8 @@ SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, siz
         {
             if (!currentValue)
             {
-                // Values must be associated with identifier or array
-                return SDSF_ERROR_EXPECTED_IDENTIFIER;
+                sdsf->errorMsg = "Values must be associated with identifier or array";
+                return SDSF_DESERIALIZATION_ERROR_EXPECTED_IDENTIFIER;
             }
 
             SdsfValue* valueToUpdate = NULL;
@@ -939,8 +993,8 @@ SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, siz
             {
                 if (!currentValue->name)
                 {
-                    // Only arrays can have values without names
-                    return SDSF_ERROR_EXPECTED_IDENTIFIER;
+                    sdsf->errorMsg = "Unexpected unnamed value. Only arrays can have values without names";
+                    return SDSF_DESERIALIZATION_ERROR_EXPECTED_IDENTIFIER;
                 }
                 valueToUpdate = currentValue;
                 currentValue = currentValue->parent;
@@ -985,8 +1039,8 @@ SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, siz
 
                     if (to < from)
                     {
-                        // "to" must be always equal or bigger than "from"
-                        return SDSF_ERROR_INVALID_BINARY_LITERAL;
+                        sdsf->errorMsg = "Invalid binary literal : \"to\" must be always equal or bigger than \"from\"";
+                        return SDSF_DESERIALIZATION_ERROR_INVALID_BINARY_LITERAL;
                     }
 
                     valueToUpdate->asBinary.dataOffset = from;
@@ -1005,7 +1059,7 @@ SdsfError sdsf_deserialize(SdsfDeserializedResult* result, const void* data, siz
         previousToken = token;
     }
     
-    return SDSF_ERROR_ALL_FINE;
+    return SDSF_DESERIALIZATION_ERROR_ALL_FINE;
 }
 
 void sdsf_deserialized_result_free(SdsfDeserializedResult* sdsf)
@@ -1062,7 +1116,7 @@ void _sdsf_ensure_buffer_capacity(SdsfAllocator* allocator, void** buffer, size_
 
 void _sdsf_push_to_stack(SdsfSerializer* sdsf, _SdsfSerializerStackEntry entry)
 {
-    if (sdsf->stackSize == sdsf->stackCapacity)
+    if (sdsf->stackSize >= sdsf->stackCapacity)
     {
         const size_t newCapacity = sdsf->stackCapacity * 2;
         _SdsfSerializerStackEntry* const newMem = (_SdsfSerializerStackEntry*)sdsf->allocator.alloc(sizeof(_SdsfSerializerStackEntry) * newCapacity, sdsf->allocator.userData);
@@ -1071,14 +1125,12 @@ void _sdsf_push_to_stack(SdsfSerializer* sdsf, _SdsfSerializerStackEntry entry)
         sdsf->stack = newMem;
         sdsf->stackCapacity = newCapacity;
     }
-    sdsf_assert(sdsf->stackSize < sdsf->stackCapacity, "Unable to push value to stack : no free space");
     sdsf->stack[sdsf->stackSize++] = entry;
 }
 
 inline _SdsfSerializerStackEntry _sdsf_pop_from_stack(SdsfSerializer* sdsf)
 {
-    sdsf_assert(sdsf->stackSize, "Unable to pop value from stack : stack is free");
-    return sdsf->stack[--sdsf->stackSize];
+    return sdsf->stackSize ? sdsf->stack[--sdsf->stackSize] : _SDSF_SERIALIZER_IN_NOTHING;
 }
 
 inline _SdsfSerializerStackEntry _sdsf_peek_stack(SdsfSerializer* sdsf)
@@ -1095,9 +1147,6 @@ inline _SdsfSerializerStackEntry _sdsf_peek_stack(SdsfSerializer* sdsf)
 
 inline void _sdsf_push_to_main_buffer(SdsfSerializer* sdsf, const void* data, size_t dataSize)
 {
-    sdsf_assert(data, "Unable to push value to main buffer : ptr is null");
-    sdsf_assert(dataSize, "Unable to push value to main buffer : size is zero");
-
     _sdsf_ensure_buffer_capacity(&sdsf->allocator, &sdsf->mainBuffer, &sdsf->mainBufferCapacity, sdsf->mainBufferSize, dataSize);
     char* const buffer = ((char*)sdsf->mainBuffer) + sdsf->mainBufferSize;
     memcpy(buffer, data, dataSize);
@@ -1106,9 +1155,6 @@ inline void _sdsf_push_to_main_buffer(SdsfSerializer* sdsf, const void* data, si
 
 inline void _sdsf_push_to_binary_buffer(SdsfSerializer* sdsf, const void* data, size_t dataSize)
 {
-    sdsf_assert(data, "Unable to push value to binary buffer : ptr is null");
-    sdsf_assert(dataSize, "Unable to push value to binary buffer : size is zero");
-
     _sdsf_ensure_buffer_capacity(&sdsf->allocator, &sdsf->binaryDataBuffer, &sdsf->binaryDataBufferCapacity, sdsf->binaryDataBufferSize, dataSize);
     void* const buffer = ((char*)sdsf->binaryDataBuffer) + sdsf->binaryDataBufferSize;
     memcpy(buffer, data, dataSize);
@@ -1123,16 +1169,50 @@ inline void _sdsf_push_indent(SdsfSerializer* sdsf)
     }
 }
 
-inline void _sdsf_begin_value(SdsfSerializer* sdsf, const char* name)
+inline SdsfSerializationError _sdsf_begin_value(SdsfSerializer* sdsf, const char* name)
 {
-    _sdsf_push_indent(sdsf);
-    if (_sdsf_peek_stack(sdsf) != _SDSF_SERIALIZER_IN_ARRAY)
+    const bool isInArray = _sdsf_peek_stack(sdsf) == _SDSF_SERIALIZER_IN_ARRAY;
+    if (!isInArray && !name)
     {
-        sdsf_assert(name, "Unable to being value serialization : name string is null (only arrays can have unnamed children)");
-        const size_t nameLength = strlen(name);
+        sdsf->errorMsg = "Only arrays can have unnamed children";
+        return SDSF_SERIALIZATION_ERROR_NO_NAME_PROVIDED;
+    }
+
+    if (_sdsf_is_number(name[0]))
+    {
+        sdsf->errorMsg = "Indentifiers can't start with number";
+        return SDSF_SERIALIZATION_ERROR_INVALID_NAME;
+    }
+
+    const size_t nameLength = strlen(name);
+    for (size_t it = 0; it < nameLength; it++)
+    {
+        const char c = name[it];
+        if (_sdsf_is_skipped_char(c) || _sdsf_is_reserved_symbol(c))
+        {
+            sdsf->errorMsg = "Identifiers can't have special or skip-characters";
+            return SDSF_SERIALIZATION_ERROR_INVALID_NAME;
+        }
+        if (c == '.' || c == '-')
+        {
+            sdsf->errorMsg = "Identifiers can't have '.' and ',' characters";
+            return SDSF_SERIALIZATION_ERROR_INVALID_NAME;
+        }
+        if (c == '\0')
+        {
+            sdsf->errorMsg = "Identifiers can't have '\\0' characters";
+            return SDSF_SERIALIZATION_ERROR_INVALID_NAME;
+        }
+    }
+
+    _sdsf_push_indent(sdsf);
+    if (!isInArray)
+    {
         _sdsf_push_to_main_buffer(sdsf, name, nameLength);
         _sdsf_push_to_main_buffer(sdsf, " ", 1);
     }
+
+    return SDSF_SERIALIZATION_ERROR_ALL_FINE;
 }
 
 inline void _sdsf_end_value(SdsfSerializer* sdsf)
@@ -1149,15 +1229,16 @@ inline void _sdsf_end_value(SdsfSerializer* sdsf)
 
 SdsfSerializer sdsf_serializer_begin(SdsfAllocator allocator)
 {
-    char* const stagingBuffer = (char*)allocator.alloc(SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY, allocator.userData);
+    char* const stagingBuffer1 = (char*)allocator.alloc(SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY, allocator.userData);
+    char* const stagingBuffer2 = (char*)allocator.alloc(SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY, allocator.userData);
     _SdsfSerializerStackEntry* const stack = (_SdsfSerializerStackEntry*)allocator.alloc(sizeof(_SdsfSerializerStackEntry) * SDSF_SERIALIZER_STACK_DEFAULT_CAPACITY, allocator.userData);
     void* const buffer = allocator.alloc(SDSF_SERIALIZER_MAIN_BUFFER_DEFAULT_CAPACITY, allocator.userData);
     void* const binaryDataBuffer = allocator.alloc(SDSF_SERIALIZER_BINARY_DATA_BUFFER_DEFAULT_CAPACITY, allocator.userData);
 
     SdsfSerializer result = {0};
     result.allocator                = allocator;
-    result.stagingBuffer            = stagingBuffer;
-    result.stagingBufferSize        = SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY;
+    result.stagingBuffer1           = stagingBuffer1;
+    result.stagingBuffer2           = stagingBuffer2;
     result.stack                    = stack;
     result.stackSize                = 0;
     result.stackCapacity            = SDSF_SERIALIZER_STACK_DEFAULT_CAPACITY;
@@ -1170,114 +1251,207 @@ SdsfSerializer sdsf_serializer_begin(SdsfAllocator allocator)
     return result;
 }
 
-void sdsf_serialize_bool(SdsfSerializer* sdsf, const char* name, bool value)
+SdsfSerializationError sdsf_serialize_bool(SdsfSerializer* sdsf, const char* name, bool value)
 {
-    _sdsf_begin_value(sdsf, name);
+    const SdsfSerializationError beginValueError = _sdsf_begin_value(sdsf, name);
+    if (beginValueError)
+    {
+        return beginValueError;
+    }
+    
     _sdsf_push_to_main_buffer(sdsf, value ? "t" : "f", 1);
     _sdsf_end_value(sdsf);
+
+    return SDSF_SERIALIZATION_ERROR_ALL_FINE;
 }
 
-void sdsf_serialize_int(SdsfSerializer* sdsf, const char* name, int32_t value)
+SdsfSerializationError sdsf_serialize_int(SdsfSerializer* sdsf, const char* name, int32_t value)
 {
-    _sdsf_begin_value(sdsf, name);
-    const int written = snprintf(sdsf->stagingBuffer, sdsf->stagingBufferSize, "%d", value);
-    sdsf_assert(written > 0 && written < sdsf->stagingBufferSize, "Unable to serialize integer value : staging buffer is too small. Try increasing SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY");
-    _sdsf_push_to_main_buffer(sdsf, sdsf->stagingBuffer, (size_t)written);
+    const int written = snprintf(sdsf->stagingBuffer1, SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY, "%d", value);
+    if (written < 0 || written >= SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY)
+    {
+        sdsf->errorMsg = "Unable to convert integer to string. Consider increasing SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY";
+        return SDSF_SERIALIZATION_ERROR_UNABLE_TO_CONVERT_VALUE_TO_STRING;
+    }
+
+    const SdsfSerializationError beginValueError = _sdsf_begin_value(sdsf, name);
+    if (beginValueError)
+    {
+        return beginValueError;
+    }
+
+    _sdsf_push_to_main_buffer(sdsf, sdsf->stagingBuffer1, (size_t)written);
     _sdsf_end_value(sdsf);
+
+    return SDSF_SERIALIZATION_ERROR_ALL_FINE;
 }
 
-void sdsf_serialize_float(SdsfSerializer* sdsf, const char* name, float value)
+SdsfSerializationError sdsf_serialize_float(SdsfSerializer* sdsf, const char* name, float value)
 {
-    _sdsf_begin_value(sdsf, name);
-    const int written = snprintf(sdsf->stagingBuffer, sdsf->stagingBufferSize, "%f", value);
-    sdsf_assert(written > 0 && written < sdsf->stagingBufferSize, "Unable to serialize float value : staging buffer is too small. Try increasing SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY");
-    _sdsf_push_to_main_buffer(sdsf, sdsf->stagingBuffer, (size_t)written);
+    const int written = snprintf(sdsf->stagingBuffer1, SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY, "%f", value);
+    if (written < 0 || written >= SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY)
+    {
+        sdsf->errorMsg = "Unable to convert float to string. Consider increasing SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY";
+        return SDSF_SERIALIZATION_ERROR_UNABLE_TO_CONVERT_VALUE_TO_STRING;
+    }
+
+    const SdsfSerializationError error = _sdsf_begin_value(sdsf, name);
+    if (error)
+    {
+        return error;
+    }
+
+    _sdsf_push_to_main_buffer(sdsf, sdsf->stagingBuffer1, (size_t)written);
     _sdsf_end_value(sdsf);
+
+    return SDSF_SERIALIZATION_ERROR_ALL_FINE;
 }
 
-void sdsf_serialize_string(SdsfSerializer* sdsf, const char* name, const char* value)
+SdsfSerializationError sdsf_serialize_string(SdsfSerializer* sdsf, const char* name, const char* value)
 {
-    _sdsf_begin_value(sdsf, name);
-    sdsf_assert(value, "Unable to serialize string value : value is null");
+    if (!value)
+    {
+        sdsf->errorMsg = "Unable to serialize string - value is null";
+        return SDSF_SERIALIZATION_ERROR_NO_VALUE_PROVIDED;
+    }
+
+    const SdsfSerializationError beginValueError = _sdsf_begin_value(sdsf, name);
+    if (beginValueError)
+    {
+        return beginValueError;
+    }
+
     _sdsf_push_to_main_buffer(sdsf, "\"", 1);
     const size_t valueLength = strlen(value);
     _sdsf_push_to_main_buffer(sdsf, value, valueLength);
     _sdsf_push_to_main_buffer(sdsf, "\"", 1);
     _sdsf_end_value(sdsf);
+
+    return SDSF_SERIALIZATION_ERROR_ALL_FINE;
 }
 
-void sdsf_serialize_binary(SdsfSerializer* sdsf, const char* name, const void* value, size_t size)
+SdsfSerializationError sdsf_serialize_binary(SdsfSerializer* sdsf, const char* name, const void* value, size_t size)
 {
-    _sdsf_begin_value(sdsf, name);
-
     const size_t from = sdsf->binaryDataBufferSize;
     const size_t to = from + size;
+
+    const int written1 = snprintf(sdsf->stagingBuffer1, SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY, "%zu", from);
+    if (written1 < 0 || written1 >= SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY)
+    {
+        sdsf->errorMsg = "Unable to convert first binary offset to string. Consider increasing SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY";
+        return SDSF_SERIALIZATION_ERROR_UNABLE_TO_CONVERT_VALUE_TO_STRING;
+    }
+
+    const int written2 = snprintf(sdsf->stagingBuffer2, SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY, "%zu", to);
+    if (written2 < 0 || written2 >= SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY)
+    {
+        sdsf->errorMsg = "Unable to convert second binary offset to string. Consider increasing SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY";
+        return SDSF_SERIALIZATION_ERROR_UNABLE_TO_CONVERT_VALUE_TO_STRING;
+    }
+
+    const SdsfSerializationError beginValueError = _sdsf_begin_value(sdsf, name);
+    if (beginValueError)
+    {
+        return beginValueError;
+    }
+
     if (value && size)
     {
         _sdsf_push_to_binary_buffer(sdsf, value, size);
     }
 
     _sdsf_push_to_main_buffer(sdsf, "b", 1);
-
-    int written;
-    written = snprintf(sdsf->stagingBuffer, sdsf->stagingBufferSize, "%zu", from);
-    sdsf_assert(written > 0 && written < sdsf->stagingBufferSize, "Unable to serialize binary value : staging buffer is too small. Try increasing SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY");
-    _sdsf_push_to_main_buffer(sdsf, sdsf->stagingBuffer, (size_t)written);
-
+    _sdsf_push_to_main_buffer(sdsf, sdsf->stagingBuffer1, (size_t)written1);
     _sdsf_push_to_main_buffer(sdsf, "-", 1);
-
-    written = snprintf(sdsf->stagingBuffer, sdsf->stagingBufferSize, "%zu", to);
-    sdsf_assert(written > 0 && written < sdsf->stagingBufferSize, "Unable to serialize binary value : staging buffer is too small. Try increasing SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY");
-    _sdsf_push_to_main_buffer(sdsf, sdsf->stagingBuffer, (size_t)written);
-
+    _sdsf_push_to_main_buffer(sdsf, sdsf->stagingBuffer2, (size_t)written2);
     _sdsf_end_value(sdsf);
+
+    return SDSF_SERIALIZATION_ERROR_ALL_FINE;
 }
 
-void sdsf_serialize_array_start(SdsfSerializer* sdsf, const char* name)
+SdsfSerializationError sdsf_serialize_array_start(SdsfSerializer* sdsf, const char* name)
 {
-    _sdsf_begin_value(sdsf, name);
+    const SdsfSerializationError beginValueError = _sdsf_begin_value(sdsf, name);
+    if (beginValueError)
+    {
+        return beginValueError;
+    }
+
     _sdsf_push_to_main_buffer(sdsf, "[\r\n", 3);
     _sdsf_push_to_stack(sdsf, _SDSF_SERIALIZER_IN_ARRAY);
+
+    return SDSF_SERIALIZATION_ERROR_ALL_FINE;
 }
 
-void sdsf_serialize_array_end(SdsfSerializer* sdsf)
+SdsfSerializationError sdsf_serialize_array_end(SdsfSerializer* sdsf)
 {
     const _SdsfSerializerStackEntry entry = _sdsf_pop_from_stack(sdsf);
-    sdsf_assert(entry == _SDSF_SERIALIZER_IN_ARRAY, "Unable to end array serialization : serializer is currently not in array");
+    if (entry != _SDSF_SERIALIZER_IN_ARRAY)
+    {
+        sdsf->errorMsg = "Trying to end array, but currently serializer is in another state (in composite, or not in anyrhing)";
+        return SDSF_SERIALIZATION_ERROR_UNABLE_TO_END_ARRAY;
+    }
+
     _sdsf_push_indent(sdsf);
     _sdsf_push_to_main_buffer(sdsf, "]", 1);
     _sdsf_end_value(sdsf);
+
+    return SDSF_SERIALIZATION_ERROR_ALL_FINE;
 }
 
-void sdsf_serialize_composite_start(SdsfSerializer* sdsf, const char* name)
+SdsfSerializationError sdsf_serialize_composite_start(SdsfSerializer* sdsf, const char* name)
 {
-    _sdsf_begin_value(sdsf, name);
+    const SdsfSerializationError beginValueError = _sdsf_begin_value(sdsf, name);
+    if (beginValueError)
+    {
+        return beginValueError;
+    }
+
     _sdsf_push_to_main_buffer(sdsf, "{\r\n", 3);
     _sdsf_push_to_stack(sdsf, _SDSF_SERIALIZER_IN_COMPOSITE);
+
+    return SDSF_SERIALIZATION_ERROR_ALL_FINE;
 }
 
-void sdsf_serialize_composite_end(SdsfSerializer* sdsf)
+SdsfSerializationError sdsf_serialize_composite_end(SdsfSerializer* sdsf)
 {
     const _SdsfSerializerStackEntry entry = _sdsf_pop_from_stack(sdsf);
-    sdsf_assert(entry == _SDSF_SERIALIZER_IN_COMPOSITE, "Unable to end array serialization : serializer is currently not in composite");
+    if (entry != _SDSF_SERIALIZER_IN_COMPOSITE)
+    {
+        sdsf->errorMsg = "Trying to end composite, but currently serializer is in another state (in array, or not in anyrhing)";
+        return SDSF_SERIALIZATION_ERROR_UNABLE_TO_END_COMPOSITE;
+    }
+
     _sdsf_push_indent(sdsf);
     _sdsf_push_to_main_buffer(sdsf, "}", 1);
     _sdsf_end_value(sdsf);
+
+    return SDSF_SERIALIZATION_ERROR_ALL_FINE;
 }
 
-SdsfSerializedResult sdsf_serializer_end(SdsfSerializer* sdsf)
+SdsfSerializationError sdsf_serializer_end(SdsfSerializer* sdsf, SdsfSerializedResult* result)
 {
-    sdsf_assert(sdsf->stackSize == 0, "Unable to end serialization : serializer stack is not empty. Probably you forgot some calls to sdsf_serialize_composite_end or sdsf_serialize_array_end");
+    SdsfSerializationError error = SDSF_SERIALIZATION_ERROR_ALL_FINE;
+    if (sdsf->stackSize != 0)
+    {
+        sdsf->errorMsg = "Not all composites/arrays were finished";
+        error = SDSF_SERIALIZATION_ERROR_UNFINISHED_ARRAY_OR_COMPOSITE_VALUES;
+    }
 
-    if (sdsf->binaryDataBuffer && sdsf->binaryDataBufferSize)
+    if (!error && sdsf->binaryDataBuffer && sdsf->binaryDataBufferSize)
     {
         _sdsf_push_to_main_buffer(sdsf, "\r\n@", 3);
         _sdsf_push_to_main_buffer(sdsf, sdsf->binaryDataBuffer, sdsf->binaryDataBufferSize);
     }
 
-    if (sdsf->stagingBuffer && sdsf->stagingBufferSize)
+    if (sdsf->stagingBuffer1)
     {
-        sdsf->allocator.dealloc(sdsf->stagingBuffer, sdsf->stagingBufferSize, sdsf->allocator.userData);
+        sdsf->allocator.dealloc(sdsf->stagingBuffer1, SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY, sdsf->allocator.userData);
+    }
+
+    if (sdsf->stagingBuffer2)
+    {
+        sdsf->allocator.dealloc(sdsf->stagingBuffer2, SDSF_SERIALIZER_STAGING_BUFFER_CAPACITY, sdsf->allocator.userData);
     }
 
     if (sdsf->binaryDataBuffer && sdsf->binaryDataBufferCapacity)
@@ -1290,9 +1464,17 @@ SdsfSerializedResult sdsf_serializer_end(SdsfSerializer* sdsf)
         sdsf->allocator.dealloc(sdsf->stack, sizeof(_SdsfSerializerStackEntry) * sdsf->stackCapacity, sdsf->allocator.userData);
     }
     
-    const SdsfSerializedResult result = (SdsfSerializedResult) { sdsf->allocator, sdsf->mainBuffer, sdsf->mainBufferSize, sdsf->mainBufferCapacity };
+    if (!error)
+    {
+        *result = (SdsfSerializedResult) { sdsf->allocator, sdsf->mainBuffer, sdsf->mainBufferSize, sdsf->mainBufferCapacity };
+    }
+    else
+    {
+        *result = (SdsfSerializedResult) {0};
+    }
     *sdsf = (SdsfSerializer) {0};
-    return result; 
+
+    return error; 
 }
 
 void sdsf_serialized_result_free(SdsfSerializedResult* sdsf)
@@ -1301,6 +1483,7 @@ void sdsf_serialized_result_free(SdsfSerializedResult* sdsf)
     {
         sdsf->allocator.dealloc(sdsf->buffer, sdsf->bufferCapacity, sdsf->allocator.userData);
     }
+    *sdsf = (SdsfSerializedResult) {0};
 }
 
 #ifdef __cplusplus

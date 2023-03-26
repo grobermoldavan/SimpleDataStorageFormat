@@ -48,7 +48,7 @@ void print_value_rec(const SdsfValue* value, size_t depth)
         case SDSF_VALUE_INT:    { printf("%d", value->asInt); } break;
         case SDSF_VALUE_FLOAT:  { printf("%f", value->asFloat); } break;
         case SDSF_VALUE_STRING: { printf("%s", value->asString); } break;
-        case SDSF_VALUE_BINARY: { printf("From %zu, size %zu, %s", value->asBinary.dataOffset, value->asBinary.dataSize); } break;
+        case SDSF_VALUE_BINARY: { printf("From %zu, size %zu", value->asBinary.dataOffset, value->asBinary.dataSize); } break;
     }
     printf("\n");
 
@@ -71,11 +71,11 @@ void print_value_rec(const SdsfValue* value, size_t depth)
 void deserialize_and_print(const void* data, size_t dataSize, SdsfAllocator allocator)
 {
     SdsfDeserializedResult dr = {0};
-    const SdsfError error = sdsf_deserialize(&dr, data, dataSize, allocator);
+    const SdsfDeserializationError error = sdsf_deserialize(&dr, data, dataSize, allocator);
 
     if (error)
     {
-        printf("Deserialization error : %s\n", SDSF_ERROR_TO_STR[error]);
+        printf("Deserialization error : %s. Description : %s\n", SDSF_DESERIALIZATION_ERROR_TO_STR[error], dr.errorMsg);
     }
     else
     {
@@ -116,6 +116,10 @@ void main()
 
     const char* binaryData = "This is stored in binary section";
 
+    //
+    // @NOTE : here we don't check SdsfSerializationError's because we know that all commands will succeed
+    // But in a real application it's recommended to check SdsfSerializationError value
+    //
     serialize_bunch_of_stuff(&sdsf);
     sdsf_serialize_array_start(&sdsf, "valuesInArray");
         serialize_bunch_of_stuff(&sdsf);
@@ -133,7 +137,8 @@ void main()
         sdsf_serialize_binary(&sdsf, "binaryValue", binaryData, strlen(binaryData) + 1);
     sdsf_serialize_composite_end(&sdsf);
 
-    SdsfSerializedResult sr = sdsf_serializer_end(&sdsf);
+    SdsfSerializedResult sr = {0};
+    SdsfSerializationError error = sdsf_serializer_end(&sdsf, &sr);
 
     //
     // @NOTE : In real application it's incorrect to print whole sdsf file because
